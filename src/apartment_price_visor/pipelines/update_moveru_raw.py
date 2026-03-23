@@ -4,22 +4,19 @@ import json
 import time
 from pathlib import Path
 
-from apartment_price_visor.scrapers.moveru_image_download import MoveRuImagesDownloader  # файл moveru_image_download.py
-from apartment_price_visor.scrapers.movero_listings_search import MoveRuListingsSearch, SearchResultItem  # файл movero_listings_search.py
-from apartment_price_visor.scrapers.moveru_listing_scrape import MoveRuListingScraper  # файл moveru_listing_scrape.py
-from apartment_price_visor.utils.dvc import dvc_add, dvc_push
-
+from apartment_price_visor.scrapers.movero_listings_search import MoveRuListingsSearch, SearchResultItem
+from apartment_price_visor.scrapers.moveru_image_download import MoveRuImagesDownloader
+from apartment_price_visor.scrapers.moveru_listing_scrape import MoveRuListingScraper
+from apartment_price_visor.storage.s3 import S3Settings, S3Uploader
 
 
 RAW_DIR = Path("data/raw/move_ru")
-IMAGES_DIR = RAW_DIR / "images"
 LISTINGS_PATH = RAW_DIR / "listings.jsonl"
 ERRORS_PATH = RAW_DIR / "errors.jsonl"
 
 
 def ensure_directories() -> None:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
-    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def append_jsonl(path: Path, record: dict) -> None:
@@ -77,8 +74,7 @@ def update_moveru_raw(
     search_sleep_sec: float = 1.0,
     listing_sleep_sec: float = 1.0,
     stop_on_known_streak: bool = False,
-    download_images: bool = True,
-    push_images_to_dvc: bool = False,
+    upload_images_to_s3: bool = True,
 ) -> dict:
     ensure_directories()
 
@@ -87,6 +83,7 @@ def update_moveru_raw(
     searcher = MoveRuListingsSearch(sleep_sec=search_sleep_sec)
     scraper = MoveRuListingScraper()
     image_downloader = MoveRuImagesDownloader()
+    s3_uploader = S3Uploader(S3Settings.from_env()) if upload_images_to_s3 else None
 
     search_items = searcher.collect_listing_urls(
         start_page=start_page,
@@ -106,7 +103,7 @@ def update_moveru_raw(
         "new_urls_found": len(new_items),
         "parsed_successfully": 0,
         "parse_errors": 0,
-        "images_downloaded_for": 0,
+        "images_uploaded_to_s3_for": 0,
     }
 
     for idx, item in enumerate(new_items, start=1):
@@ -116,22 +113,21 @@ def update_moveru_raw(
             record["search_page_num"] = item.page_num
             record["search_url"] = item.search_url
 
-            local_image_paths: list[str] = []
+            image_s3_uris: list[str] = []
 
-            if download_images:
+            if upload_images_to_s3:
                 listing_id = record.get("listing_id")
                 image_urls = record.get("image_urls") or []
 
-                if listing_id and image_urls:
-                    local_image_paths = image_downloader.download_listing_images(
+                if listing_id and image_urls and s3_uploader is not None:
+                    image_s3_uris = image_downloader.upload_listing_images_to_s3(
                         listing_id=str(listing_id),
                         image_urls=image_urls,
-                        images_root=IMAGES_DIR,
-                        overwrite=False,
+                        s3_uploader=s3_uploader,
                     )
-                    stats["images_downloaded_for"] += 1
+                    stats["images_uploaded_to_s3_for"] += 1
 
-            record["local_image_paths"] = local_image_paths
+            record["image_s3_uris"] = image_s3_uris
 
             append_jsonl(LISTINGS_PATH, record)
             stats["parsed_successfully"] += 1
@@ -158,10 +154,6 @@ def update_moveru_raw(
 
         time.sleep(listing_sleep_sec)
 
-    if push_images_to_dvc:
-        dvc_add(IMAGES_DIR)
-        dvc_push()
-
     return stats
 
 
@@ -172,8 +164,7 @@ def main() -> None:
         search_sleep_sec=1.0,
         listing_sleep_sec=1.0,
         stop_on_known_streak=False,
-        download_images=True,
-        push_images_to_dvc=False,
+        upload_images_to_s3=True,
     )
 
     print("\nRun finished:")
@@ -181,4 +172,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main() 
+    main()

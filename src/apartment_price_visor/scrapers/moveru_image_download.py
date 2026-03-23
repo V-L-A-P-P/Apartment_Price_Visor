@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+from apartment_price_visor.storage.s3 import S3Uploader
 
 
 class MoveRuImagesDownloader:
@@ -51,37 +52,36 @@ class MoveRuImagesDownloader:
 
         return ".jpg"
 
-    def download_listing_images(
+    def upload_listing_images_to_s3(
         self,
         *,
         listing_id: str,
         image_urls: list[str],
-        images_root: Path,
-        overwrite: bool = False,
+        s3_uploader: S3Uploader,
     ) -> list[str]:
         """
-        Скачивает картинки объявления в папку:
-        images_root / listing_id / 0001.jpg ...
+        Скачивает картинки объявления и сразу загружает их в S3.
 
-        Возвращает список локальных путей.
+        Возвращает список S3 URI.
         """
-        listing_dir = images_root / str(listing_id)
-        listing_dir.mkdir(parents=True, exist_ok=True)
-
-        saved_paths: list[str] = []
+        uploaded_uris: list[str] = []
 
         for idx, image_url in enumerate(image_urls, start=1):
             ext = self._guess_extension_from_url(image_url)
-            file_path = listing_dir / f"{idx:04d}{ext}"
-
-            if file_path.exists() and not overwrite:
-                saved_paths.append(str(file_path))
-                continue
+            filename = f"{idx:04d}{ext}"
 
             response = self.session.get(image_url, timeout=self.timeout)
             response.raise_for_status()
 
-            file_path.write_bytes(response.content)
-            saved_paths.append(str(file_path))
+            object_key = s3_uploader.build_object_key(
+                listing_id=str(listing_id),
+                filename=filename,
+            )
+            uploaded_uri = s3_uploader.upload_bytes(
+                content=response.content,
+                object_key=object_key,
+                content_type=s3_uploader.guess_content_type(filename),
+            )
+            uploaded_uris.append(uploaded_uri)
 
-        return saved_paths
+        return uploaded_uris
