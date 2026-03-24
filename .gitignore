@@ -45,3 +45,7 @@ data/processed/*
 !data/raw/*.dvc
 !data/interim/*.dvc
 !data/processed/*.dvc
+
+
+data/**
+!data/**/*.dvc
