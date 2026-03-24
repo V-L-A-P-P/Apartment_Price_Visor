@@ -9,6 +9,8 @@ wheels/
 *.pyo
 *.pyd
 
+.env
+
 # Virtual environment
 .venv/
 
