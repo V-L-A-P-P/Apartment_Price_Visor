@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "beautifulsoup4>=4.14.3",
+    "boto3>=1.42.74",
     "dvc>=3.67.0",
     "pandas>=3.0.1",
     "requests>=2.32.5",
