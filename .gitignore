@@ -31,21 +31,32 @@ htmlcov/
 .idea/
 .DS_Store
 
-# Data
-data/raw/*
-data/interim/*
-data/processed/*
+# Data - ignore actual data files but keep structure and DVC metafiles
+data/raw/*.parquet
+data/raw/*.csv
+data/raw/*.json
+data/raw/*.jsonl
+data/interim/*.parquet
+data/interim/*.csv
+data/processed/*.parquet
+data/processed/*.csv
 
 # Keep folder structure
 !data/raw/.gitkeep
 !data/interim/.gitkeep
 !data/processed/.gitkeep
 
-# Allow DVC metafiles
+# Allow DVC metafiles (must be after the ignore rules)
 !data/raw/*.dvc
 !data/interim/*.dvc
 !data/processed/*.dvc
 
-
-data/**
+# Also allow DVC files in subdirectories
 !data/**/*.dvc
+
+# DVC
+.dvc/cache
+.dvc/tmp
+.dvc/updater
+.dvc/state
+.dvc/lock
