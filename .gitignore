@@ -60,3 +60,5 @@ data/processed/*.csv
 .dvc/updater
 .dvc/state
 .dvc/lock
+.dvc/config
+.dvc/config
