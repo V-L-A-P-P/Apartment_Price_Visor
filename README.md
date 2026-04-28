@@ -1,95 +1,162 @@
 # Apartment Price Visor
 
-Сервис для автоматического сбора и анализа объявлений о продаже/аренде квартир с целью оценки справедливости цены.
+Проект для автоматизации сбора, валидации и анализа объявлений о квартирах на `move.ru` с последующей подготовкой табличных данных и обучением моделей оценки цены.
 
-## Цель проекта
+## Что делает проект
 
-Построить систему, которая получает ссылку на объявление, собирает данные и формирует основу для анализа:
-- насколько цена объявления соответствует ожидаемой рыночной;
-- какие факторы влияют на цену;
-- какие объявления выглядят переоценёнными/недооценёнными.
+- собирает объявления о продаже/аренде квартир со страницы Move.ru
+- парсит карточки объявлений и формирует структурированный JSONL
+- загружает изображения в S3-совместимое хранилище и сохраняет URI
+- приводит данные к единой схеме и разделяет на `clean` и `rejected`
+- готовит табличные датасеты для обучения моделей
+- обучает CatBoost и baseline RandomForest для предсказания цены
 
----
+## Ключевые компоненты
+
+- `src/apartment_price_visor/scrapers/` — скрейпинг объявлений и парсинг структурированных свойств
+- `src/apartment_price_visor/storage/` — загрузка изображений в S3 API (Yandex Object Storage)
+- `src/apartment_price_visor/preprocessing/` — чтение сырья, приведение типов, дедупликация, валидация схемы и экспорт parquet
+- `src/apartment_price_visor/models/` — обучение табличных моделей и сохранение результатов
 
 ## Что уже реализовано
 
-### 1) Инициализация проекта
-- Python-проект на `uv`
-- структура репозитория в стиле data/ML-проекта:
-  - `src/`
-  - `data/raw`, `data/processed`
-  - `tests/`
-- Git + `.gitignore`
+- работа с DVC для хранения `raw` и `processed` данных
+- подробная Pandera-схема с проверками диапазонов и кросс-полями
+- хранение изображений в S3 и формирование поля `image_s3_uris`
+- отделение отклонённых строк в `listings_rejected.parquet`
+- обучение CatBoost-модели и baseline RandomForest
 
-### 2) DVC
-- DVC подключён для отслеживания тяжёлых/производных артефактов.
+## Структура проекта
 
-### 3) Скрейпинг Move.ru
-Реализованы модули:
-- поиск URL объявлений в выдаче;
-- парсинг карточки объявления (цена, площадь, комнаты, этажи, описание, метро, и т.д.);
-- сбор `image_urls`.
-
-### 4) Загрузка изображений в S3 (Yandex Object Storage)
-- изображения по `image_urls` скачиваются и загружаются в S3-совместимое хранилище;
-- в raw-датасете хранится `image_s3_uris` (а не локальные пути).
-
-### 5) Raw pipeline
-Pipeline делает:
-1. сбор новых URL;
-2. парсинг карточек;
-3. запись сырого JSONL;
-4. загрузку изображений в S3;
-5. сохранение `image_s3_uris`.
-
-Выход:
-- `data/raw/move_ru/listings.jsonl`
-- `data/raw/move_ru/errors.jsonl`
-
-### 6) Валидация схемы (Pandera)
-- описана схема датасета;
-- добавлены правила диапазонов и кросс-полевые проверки
-  (например `floor <= floors_total`, `living_area <= area_total`).
-
-### 7) Сборка clean-датасета
-Скрипт preprocessing:
-- читает raw JSONL;
-- приводит типы;
-- удаляет дубликаты;
-- валидирует через Pandera;
-- сохраняет:
-  - clean parquet,
-  - rejected parquet (строки с нарушениями правил).
-
-### 8) DVC для processed parquet
-- clean/rejected parquet добавляются под DVC;
-- артефакты пушатся в DVC remote.
-
----
-
-## Текущая архитектура данных
-
-### Raw layer
-- `data/raw/move_ru/listings.jsonl`
-- `data/raw/move_ru/errors.jsonl`
-- изображения в Yandex Object Storage, ссылки в поле `image_s3_uris`.
-
-### Processed layer
-- `data/processed/move_ru/listings_clean.parquet`
-- `data/processed/move_ru/listings_rejected.parquet`
-
----
+```text
+.
+├── README.md
+├── pyproject.toml
+├── main.py
+├── data/
+│   ├── raw/
+│   │   └── move_ru/
+│   │       ├── listings.jsonl
+│   │       └── errors.jsonl
+│   └── processed/
+│       └── move_ru/
+│           ├── listings_clean.parquet
+│           └── listings_rejected.parquet
+├── src/apartment_price_visor/
+│   ├── preprocessing/
+│   ├── scrapers/
+│   ├── storage/
+│   └── models/
+└── artifacts/
+    ├── models/
+    └── metrics/
+```
 
 ## Требования
 
 - Python 3.11+
-- `uv`
-- доступ к интернету для скрейпинга
-- бакет в Yandex Object Storage (S3 API)
-
----
+- `uv` для управления зависимостями
+- `dvc` и `dvc-s3` для работы с артефактами
+- доступ в интернет для скрейпинга
+- S3-совместимый бакет для хранения изображений
 
 ## Установка
 
+1. Установить зависимости:
+
 ```bash
 uv sync
+```
+
+2. Проверить, что пакеты установлены корректно:
+
+```bash
+uv run python -c "import pandas, pandera, requests, boto3"
+```
+
+## Переменные окружения
+
+Для загрузки изображений через `S3Uploader` задать:
+
+```bash
+export APARTMENT_PRICE_VISOR_S3_BUCKET="your-bucket-name"
+export APARTMENT_PRICE_VISOR_S3_ENDPOINT_URL="https://storage.yandexcloud.net"
+export APARTMENT_PRICE_VISOR_S3_ACCESS_KEY_ID="your-access-key"
+export APARTMENT_PRICE_VISOR_S3_SECRET_ACCESS_KEY="your-secret-key"
+export APARTMENT_PRICE_VISOR_S3_REGION="ru-central1"
+export APARTMENT_PRICE_VISOR_S3_KEY_PREFIX="move_ru/images"
+```
+
+Можно сохранить в файл `.env`, чтобы `dotenv` загрузил значения автоматически.
+
+## Использование
+
+### 1. Построение clean/rejected датасета
+
+```bash
+uv run python -m apartment_price_visor.preprocessing.build_dataset
+```
+
+Если `uv` не настроен, можно запустить напрямую из корня:
+
+```bash
+PYTHONPATH=src uv run python -m apartment_price_visor.preprocessing.build_dataset
+```
+
+### 2. Обучение табличных моделей
+
+```bash
+uv run python -m apartment_price_visor.models.train_tabular_model --train-dir data/processed/train --out-dir artifacts --test-size 0.2
+```
+
+По умолчанию ожидаются файлы:
+
+- `data/processed/train/train_tabular_catboost.parquet`
+- `data/processed/train/train_tabular_baseline.parquet`
+
+### 3. Тест S3-загрузки
+
+```bash
+uv run python src/apartment_price_visor/storage/s3.py
+```
+
+Этот модуль проверяет переменные окружения и загружает тестовый объект в указанный бакет.
+
+## Данные
+
+- `data/raw/move_ru/listings.jsonl` — сырые записи объявлений
+- `data/raw/move_ru/errors.jsonl` — ошибки парсинга
+- `data/processed/move_ru/listings_clean.parquet` — валидные объявления
+- `data/processed/move_ru/listings_rejected.parquet` — объявления, не прошедшие валидацию
+
+## Схема данных
+
+Схема определена в `src/apartment_price_visor/preprocessing/schema.py` и включает поля:
+
+- `source`, `scraped_at`, `url`, `listing_id`
+- `price`, `views`, `date_added`, `rooms_count`, `area_total`, `living_area`, `kitchen_area`
+- `floor`, `floors_total`, `housing_type`, `object_type`, `renovation`
+- `ceiling_height_m`, `address_city`, `address_street`, `nearest_metro_name`
+- `nearest_metro_duration_min`, `nearest_metro_distance_km`, `housing_class`
+- `building_type`, `building_stage`, `complex_floors_total`, `complex_lift_flag`
+- `parking_flag`, `delivery_quarter`, `previous_price`, `feature_list`
+- `title`, `description`, `image_urls`, `search_page_num`, `search_url`, `image_s3_uris`
+
+Валидация проверяет диапазоны, типы и логические зависимости (`floor <= floors_total`, `living_area <= area_total`, `kitchen_area <= area_total`).
+
+## Тестирование
+
+```bash
+uv run pytest
+```
+
+## Цели развития
+
+- расширить обработку ещё большего числа сегментов объявлений
+- добавить inference API для быстрой оценки цены по URL
+- улучшить обучение моделей, выполнив feature engineering и кросс-валидацию
+- добавить отчёты по переоценке/недооценке объявлений
+
+## Контакты
+
+Если нужно дополнить README или добавить новые сценарии, просто открой issue или отправь PR.
