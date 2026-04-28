@@ -6,7 +6,10 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from apartment_price_visor.config import DEFAULT_CATBOOST_MODEL_PATH
+from apartment_price_visor.config import (
+    DEFAULT_CATBOOST_MODEL_PATH,
+    DEFAULT_CATBOOST_SELLER_MODEL_PATH,
+)
 from apartment_price_visor.models.infer_tabular_model import (
     preload_inference_models,
     predict_price_from_features,
@@ -15,8 +18,8 @@ from apartment_price_visor.models.infer_tabular_model import (
 
 class ApartmentFeatures(BaseModel):
     listing_id: int = 0
-    views: int = 0
-    date_added: str
+    views: int | None = None
+    date_added: str | None = None
     rooms_count: float
     area_total: float
     living_area: float | None = None
@@ -32,14 +35,15 @@ class ApartmentFeatures(BaseModel):
     nearest_metro_name: str
     nearest_metro_duration_min: float
     nearest_metro_distance_km: float | None = None
-    housing_class: str
-    building_stage: str
+    housing_class: str | None = None
+    building_stage: str | None = None
     complex_floors_total: float | None = None
-    delivery_quarter: str
+    delivery_quarter: str | None = None
     description: str = Field(default="", description="Free text apartment description")
 
 
 class PredictRequest(BaseModel):
+    mode: str = Field(default="seller", pattern="^(seller|full)$")
     features: ApartmentFeatures
 
 
@@ -47,6 +51,7 @@ class PredictResponse(BaseModel):
     predicted_price: float
     currency: str = "RUB"
     price_per_m2: float
+    mode: str
     model_path: str
 
 
@@ -57,31 +62,49 @@ def _resolve_model_path() -> Path:
     return Path(os.getenv("MODEL_PATH", str(DEFAULT_CATBOOST_MODEL_PATH)))
 
 
+def _resolve_model_path_for_mode(mode: str) -> Path:
+    if mode == "seller":
+        return Path(os.getenv("SELLER_MODEL_PATH", str(DEFAULT_CATBOOST_SELLER_MODEL_PATH)))
+    return _resolve_model_path()
+
+
 @app.on_event("startup")
 def startup_preload() -> None:
-    model_path = _resolve_model_path()
-    preload_inference_models(model_path=model_path)
+    full_model_path = _resolve_model_path()
+    if full_model_path.exists():
+        preload_inference_models(model_path=full_model_path)
+    seller_model_path = _resolve_model_path_for_mode("seller")
+    if seller_model_path.exists() and seller_model_path != full_model_path:
+        preload_inference_models(model_path=seller_model_path)
 
 
 @app.get("/v1/health")
 def health() -> dict:
-    model_path = _resolve_model_path()
+    full_model_path = _resolve_model_path()
+    seller_model_path = _resolve_model_path_for_mode("seller")
     return {
         "status": "ok",
-        "model_path": str(model_path),
-        "model_exists": model_path.exists(),
+        "model_path_full": str(full_model_path),
+        "model_exists_full": full_model_path.exists(),
+        "model_path_seller": str(seller_model_path),
+        "model_exists_seller": seller_model_path.exists(),
     }
 
 
 @app.post("/v1/predict", response_model=PredictResponse)
 def predict(payload: PredictRequest) -> PredictResponse:
-    model_path = _resolve_model_path()
+    mode = payload.mode
+    model_path = _resolve_model_path_for_mode(mode)
     if not model_path.exists():
         raise HTTPException(status_code=500, detail=f"Model not found: {model_path}")
 
     features = payload.features.model_dump()
     try:
-        predicted_price = predict_price_from_features(features=features, model_path=model_path)
+        predicted_price = predict_price_from_features(
+            features=features,
+            model_path=model_path,
+            mode=mode,
+        )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -91,5 +114,6 @@ def predict(payload: PredictRequest) -> PredictResponse:
     return PredictResponse(
         predicted_price=predicted_price,
         price_per_m2=price_per_m2,
+        mode=mode,
         model_path=str(model_path),
     )
