@@ -2,7 +2,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import Message
 import asyncio
 
-bot = Bot(token='8503515711:AAE7qT6VU0VolOgxwSkN-D7Q0nl7ka8Jn2M')
+bot = Bot(token='')
 dp = Dispatcher()
 
 @dp.message()
