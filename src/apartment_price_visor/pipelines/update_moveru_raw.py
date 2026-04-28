@@ -84,7 +84,7 @@ def update_moveru_raw(
     ensure_directories()
 
     known_listing_ids = load_known_listing_ids(LISTINGS_PATH)
-
+    print('Загружены listings')
     searcher = MoveRuListingsSearch(sleep_sec=search_sleep_sec)
     scraper = MoveRuListingScraper()
     image_downloader = MoveRuImagesDownloader()
@@ -93,6 +93,7 @@ def update_moveru_raw(
     if upload_images_to_s3:
         s3_settings = S3Settings.from_env()
         s3_uploader = S3Uploader(s3_settings)
+    print('Подготовлен s3 uploader')
 
     search_items = searcher.collect_listing_urls(
         start_page=start_page,
@@ -100,11 +101,13 @@ def update_moveru_raw(
         known_listing_ids=known_listing_ids,
         stop_on_known_streak=stop_on_known_streak,
     )
+    print('Collected items')
 
     new_items = searcher.filter_only_new_items(
         items=search_items,
         known_listing_ids=known_listing_ids,
     )
+    print('Filtered items')
 
     stats = {
         "known_before_run": len(known_listing_ids),
@@ -170,8 +173,8 @@ def main() -> None:
     load_dotenv()
     print("Starting Move.ru raw data update...")
     stats = update_moveru_raw(
-        start_page=1,
-        max_pages=100,
+        start_page=1200,
+        max_pages=1500,
         search_sleep_sec=0.1,
         listing_sleep_sec=0.1,
         stop_on_known_streak=False,
