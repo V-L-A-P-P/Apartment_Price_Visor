@@ -148,6 +148,7 @@ class MoveRuListingsSearch:
         seen_urls: set[str] = set()
 
         for page_num in range(start_page, start_page + max_pages):
+            print(f'Searching on {page_num}')
             page_items = self.parse_search_page(page_num=page_num)
 
             if not page_items:
