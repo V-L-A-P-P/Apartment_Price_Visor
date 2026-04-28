@@ -12,9 +12,18 @@ from catboost import CatBoostRegressor
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error, r2_score
 
+from apartment_price_visor.config import (
+    BASELINE_TRAIN_DATASET_NAME,
+    CATBOOST_SELLER_TRAIN_DATASET_NAME,
+    CATBOOST_EMBEDDING_FEATURES,
+    CATBOOST_TRAIN_DATASET_NAME,
+    CATBOOST_TRAIN_PARAMS,
+    CAT_FEATURES,
+    DEFAULT_ARTIFACTS_DIR,
+    DEFAULT_TRAIN_DIR,
+)
 
-DEFAULT_TRAIN_DIR = Path("data/processed/train")
-DEFAULT_OUT_DIR = Path("artifacts")
+DEFAULT_OUT_DIR = DEFAULT_ARTIFACTS_DIR
 
 
 def evaluate_regression(y_true: pd.Series, y_pred: np.ndarray) -> dict:
@@ -45,6 +54,8 @@ def split_train_test(df: pd.DataFrame, test_size: float = 0.2) -> tuple[pd.DataF
 def train_catboost(
     train_path: Path,
     out_dir: Path,
+    model_file_name: str = "catboost_model.cbm",
+    metrics_file_name: str = "catboost_metrics.json",
     test_size: float = 0.2,
 ) -> dict:
     df = pd.read_parquet(train_path)
@@ -54,18 +65,9 @@ def train_catboost(
         raise ValueError("Column 'price' is required in CatBoost dataset")
 
     # cat features ожидаем как в prepare_train_datasets
-    cat_features = [
-        "housing_type",
-        "object_type",
-        "renovation",
-        "address_city",
-        "address_street",
-        "nearest_metro_name",
-        "housing_class",
-        "building_stage",
-        "delivery_quarter",
-    ]
-    cat_features = [c for c in cat_features if c in df.columns]
+    cat_features = [c for c in CAT_FEATURES if c in df.columns]
+    embedding_features = CATBOOST_EMBEDDING_FEATURES
+    embedding_features = [c for c in embedding_features if c in df.columns]
 
     train_df, test_df = split_train_test(df, test_size=test_size)
 
@@ -74,20 +76,13 @@ def train_catboost(
     X_test = test_df.drop(columns=["price"])
     y_test = test_df["price"]
 
-    model = CatBoostRegressor(
-        loss_function="MAE",
-        eval_metric="MAE",
-        depth=3,
-        learning_rate=0.05,
-        n_estimators=500,
-        random_seed=42,
-        verbose=200,
-    )
+    model = CatBoostRegressor(**CATBOOST_TRAIN_PARAMS)
 
     model.fit(
         X_train,
         y_train,
         cat_features=cat_features,
+        embedding_features=embedding_features,
         eval_set=(X_test, y_test),
         use_best_model=True,
     )
@@ -100,8 +95,8 @@ def train_catboost(
     model_dir.mkdir(parents=True, exist_ok=True)
     metrics_dir.mkdir(parents=True, exist_ok=True)
 
-    model_path = model_dir / "catboost_model.cbm"
-    metrics_path = metrics_dir / "catboost_metrics.json"
+    model_path = model_dir / model_file_name
+    metrics_path = metrics_dir / metrics_file_name
 
     model.save_model(str(model_path))
 
@@ -111,6 +106,7 @@ def train_catboost(
         "train_rows": int(len(train_df)),
         "test_rows": int(len(test_df)),
         "metrics": metrics,
+        "embedding_features": embedding_features,
         "train_path": str(train_path),
         "model_path": str(model_path),
     }
@@ -201,12 +197,22 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    catboost_train_path = args.train_dir / "train_tabular_catboost.parquet"
-    baseline_train_path = args.train_dir / "train_tabular_baseline.parquet"
+    catboost_train_path = args.train_dir / CATBOOST_TRAIN_DATASET_NAME
+    catboost_seller_train_path = args.train_dir / CATBOOST_SELLER_TRAIN_DATASET_NAME
+    baseline_train_path = args.train_dir / BASELINE_TRAIN_DATASET_NAME
 
     catboost_result = train_catboost(
         train_path=catboost_train_path,
         out_dir=args.out_dir,
+        model_file_name="catboost_model.cbm",
+        metrics_file_name="catboost_metrics.json",
+        test_size=args.test_size,
+    )
+    catboost_seller_result = train_catboost(
+        train_path=catboost_seller_train_path,
+        out_dir=args.out_dir,
+        model_file_name="catboost_model_seller.cbm",
+        metrics_file_name="catboost_seller_metrics.json",
         test_size=args.test_size,
     )
     baseline_result = train_baseline(
@@ -218,6 +224,7 @@ def main() -> None:
     print(json.dumps(
         {
             "catboost": catboost_result["metrics"],
+            "catboost_seller": catboost_seller_result["metrics"],
             "baseline": baseline_result["metrics"],
         },
         ensure_ascii=False,
