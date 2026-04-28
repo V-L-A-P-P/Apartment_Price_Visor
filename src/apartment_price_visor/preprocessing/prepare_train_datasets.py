@@ -7,66 +7,27 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
+from sentence_transformers import SentenceTransformer
 
+from apartment_price_visor.config import (
+    BASELINE_TRAIN_DATASET_NAME,
+    BASE_NUM_FEATURES,
+    CATBOOST_SELLER_TRAIN_DATASET_NAME,
+    CATBOOST_EMBEDDING_FEATURES,
+    CATBOOST_TRAIN_DATASET_NAME,
+    CAT_FEATURES_SELLER,
+    CAT_FEATURES,
+    DATASET_META_NAME,
+    DEFAULT_CLEAN_PATH,
+    DEFAULT_TRAIN_DIR,
+    DESCRIPTION_COL,
+    DESCRIPTION_EMBEDDING_COL,
+    EMBEDDING_MODEL_NAME,
+    TABLE_COLS_CB_SELLER,
+    TABLE_COLS_CB,
+)
 
-# ---------- Paths ----------
-DEFAULT_CLEAN_PATH = Path("data/processed/move_ru/listings_clean.parquet")
-DEFAULT_OUT_DIR = Path("data/processed/train")
-
-CATBOOST_OUT = "train_tabular_catboost.parquet"
-BASELINE_OUT = "train_tabular_baseline.parquet"
-META_OUT = "dataset_meta.json"
-
-
-# ---------- Feature configs ----------
-TABLE_COLS_CB = [
-    "listing_id",
-    "price",
-    "views",
-    "date_added",
-    "rooms_count",
-    "area_total",
-    "living_area",
-    "kitchen_area",
-    "floor",
-    "floors_total",
-    "housing_type",
-    "object_type",
-    "renovation",
-    "ceiling_height_m",
-    "address_city",
-    "address_street",
-    "nearest_metro_name",
-    "nearest_metro_duration_min",
-    "nearest_metro_distance_km",
-    "housing_class",
-    "building_stage",
-    "complex_floors_total",
-    "delivery_quarter",
-]
-
-CAT_FEATURES = [
-    "housing_type",
-    "object_type",
-    "renovation",
-    "address_city",
-    "address_street",
-    "nearest_metro_name",
-    "housing_class",
-    "building_stage",
-    "delivery_quarter",
-]
-
-BASE_NUM_FEATURES = [
-    "listing_id",
-    "price",
-    "area_total",
-    "floor",
-    "floors_total",
-    "rooms_count",
-    "nearest_metro_duration_min",
-    "views",
-]
+_EMBEDDING_MODEL: SentenceTransformer | None = None
 
 
 @dataclass
@@ -75,6 +36,26 @@ class PreparedDataset:
     target_col: str
     feature_cols: list[str]
     cat_features: list[str] | None = None
+    embedding_features: list[str] | None = None
+
+
+def _get_embedding_model() -> SentenceTransformer:
+    global _EMBEDDING_MODEL
+    if _EMBEDDING_MODEL is None:
+        _EMBEDDING_MODEL = SentenceTransformer(EMBEDDING_MODEL_NAME)
+    return _EMBEDDING_MODEL
+
+
+def _encode_description_embeddings(description: pd.Series) -> list[list[float]]:
+    model = _get_embedding_model()
+    texts = description.fillna("").astype(str).tolist()
+    embeddings = model.encode(
+        texts,
+        show_progress_bar=True,
+        convert_to_numpy=True,
+        normalize_embeddings=True,
+    )
+    return embeddings.astype("float32").tolist()
 
 
 def _ensure_columns(df: pd.DataFrame, cols: list[str], dataset_name: str) -> None:
@@ -91,10 +72,21 @@ def _to_numeric(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     return out
 
 
-def prepare_catboost_df(data: pd.DataFrame) -> PreparedDataset:
-    _ensure_columns(data, TABLE_COLS_CB, "catboost")
+def prepare_catboost_df(data: pd.DataFrame, mode: str = "full") -> PreparedDataset:
+    if mode == "seller":
+        required_cols = TABLE_COLS_CB_SELLER
+        cat_features = CAT_FEATURES_SELLER
+        dataset_name = "catboost_seller"
+    else:
+        required_cols = TABLE_COLS_CB
+        cat_features = CAT_FEATURES
+        dataset_name = "catboost_full"
 
-    df = data[TABLE_COLS_CB].copy()
+    _ensure_columns(data, required_cols, dataset_name)
+
+    df = data[required_cols].copy()
+    df[DESCRIPTION_EMBEDDING_COL] = _encode_description_embeddings(df[DESCRIPTION_COL])
+    df = df.drop(columns=[DESCRIPTION_COL])
 
     # Date features
     df["date_added"] = pd.to_datetime(df["date_added"], errors="coerce")
@@ -144,7 +136,8 @@ def prepare_catboost_df(data: pd.DataFrame) -> PreparedDataset:
         df=df,
         target_col="price",
         feature_cols=feature_cols,
-        cat_features=CAT_FEATURES,
+        cat_features=cat_features,
+        embedding_features=CATBOOST_EMBEDDING_FEATURES,
     )
 
 
@@ -173,16 +166,19 @@ def prepare_baseline_df(data: pd.DataFrame) -> PreparedDataset:
 
 def save_prepared_datasets(
     catboost_ds: PreparedDataset,
+    catboost_seller_ds: PreparedDataset,
     baseline_ds: PreparedDataset,
     out_dir: Path,
 ) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    catboost_path = out_dir / CATBOOST_OUT
-    baseline_path = out_dir / BASELINE_OUT
-    meta_path = out_dir / META_OUT
+    catboost_path = out_dir / CATBOOST_TRAIN_DATASET_NAME
+    catboost_seller_path = out_dir / CATBOOST_SELLER_TRAIN_DATASET_NAME
+    baseline_path = out_dir / BASELINE_TRAIN_DATASET_NAME
+    meta_path = out_dir / DATASET_META_NAME
 
     catboost_ds.df.to_parquet(catboost_path, index=False)
+    catboost_seller_ds.df.to_parquet(catboost_seller_path, index=False)
     baseline_ds.df.to_parquet(baseline_path, index=False)
 
     meta = {
@@ -192,7 +188,16 @@ def save_prepared_datasets(
             "target_col": catboost_ds.target_col,
             "feature_cols": catboost_ds.feature_cols,
             "cat_features": catboost_ds.cat_features,
+            "embedding_features": catboost_ds.embedding_features,
             "path": str(catboost_path),
+        },
+        "catboost_seller": {
+            "rows": int(len(catboost_seller_ds.df)),
+            "target_col": catboost_seller_ds.target_col,
+            "feature_cols": catboost_seller_ds.feature_cols,
+            "cat_features": catboost_seller_ds.cat_features,
+            "embedding_features": catboost_seller_ds.embedding_features,
+            "path": str(catboost_seller_path),
         },
         "baseline": {
             "rows": int(len(baseline_ds.df)),
@@ -221,7 +226,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=DEFAULT_OUT_DIR,
+        default=DEFAULT_TRAIN_DIR,
         help="Output directory for prepared train datasets",
     )
     return parser.parse_args()
@@ -232,10 +237,11 @@ def main() -> None:
 
     data = pd.read_parquet(args.clean_path)
 
-    catboost_ds = prepare_catboost_df(data)
+    catboost_ds = prepare_catboost_df(data, mode="full")
+    catboost_seller_ds = prepare_catboost_df(data, mode="seller")
     baseline_ds = prepare_baseline_df(data)
 
-    meta = save_prepared_datasets(catboost_ds, baseline_ds, args.out_dir)
+    meta = save_prepared_datasets(catboost_ds, catboost_seller_ds, baseline_ds, args.out_dir)
     print(json.dumps(meta, ensure_ascii=False, indent=2))
 
 
