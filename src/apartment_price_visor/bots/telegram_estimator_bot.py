@@ -9,7 +9,7 @@ from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message
+from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
 
 from apartment_price_visor.config import (
     DEFAULT_BOT_HTTP_TIMEOUT_SECONDS,
@@ -19,6 +19,13 @@ from apartment_price_visor.models.similar_ads import find_similar_ads
 
 API_URL = os.getenv("INFERENCE_API_URL", DEFAULT_INFERENCE_API_URL)
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+
+BTN_ESTIMATE = "Оценить квартиру"
+BTN_CHECK_PRICE = "Проверить мою цену"
+BTN_IMPROVE_DESCRIPTION = "Улучшить описание"
+BTN_SELLER_TIPS = "Советы по цене"
+BTN_SIMILAR_ADS = "Похожие объявления"
+BTN_CANCEL = "Отмена"
 
 
 class EstimateFlow(StatesGroup):
@@ -35,7 +42,6 @@ class ImproveDescriptionFlow(StatesGroup):
 
 FieldParser = Callable[[str], Any]
 FIELD_SPECS: list[tuple[str, str, FieldParser]] = [
-    ("date_added", "Дата объявления (YYYY-MM-DD):", str),
     ("rooms_count", "Количество комнат:", float),
     ("area_total", "Общая площадь (м2):", float),
     ("living_area", "Жилая площадь (м2, можно 0):", float),
@@ -51,15 +57,22 @@ FIELD_SPECS: list[tuple[str, str, FieldParser]] = [
     ("nearest_metro_name", "Ближайшее метро:", str),
     ("nearest_metro_duration_min", "До метро (мин):", float),
     ("nearest_metro_distance_km", "До метро (км, можно 0):", float),
-    ("housing_class", "Класс жилья:", str),
-    ("building_stage", "Стадия дома (built/construction):", str),
-    ("complex_floors_total", "Этажность ЖК (можно 0):", float),
-    ("delivery_quarter", "Квартал сдачи (Q1-Q4):", str),
-    ("views", "Просмотры объявления (можно 0):", int),
     ("description", "Описание квартиры (свободный текст):", str),
 ]
 
 router = Router()
+
+
+def _main_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_ESTIMATE), KeyboardButton(text=BTN_CHECK_PRICE)],
+            [KeyboardButton(text=BTN_IMPROVE_DESCRIPTION)],
+            [KeyboardButton(text=BTN_SELLER_TIPS), KeyboardButton(text=BTN_SIMILAR_ADS)],
+            [KeyboardButton(text=BTN_CANCEL)],
+        ],
+        resize_keyboard=True,
+    )
 
 
 def _parse_value(value: str, parser: FieldParser) -> Any:
@@ -112,7 +125,7 @@ async def _submit_estimate(message: Message, state: FSMContext) -> None:
     features = data.get("features", {})
     features.setdefault("listing_id", 0)
 
-    payload = {"features": features}
+    payload = {"mode": "seller", "features": features}
     try:
         async with httpx.AsyncClient(timeout=DEFAULT_BOT_HTTP_TIMEOUT_SECONDS) as client:
             response = await client.post(API_URL, json=payload)
@@ -235,14 +248,19 @@ async def cmd_start(message: Message) -> None:
         "/check_price - проверить свою цену\n"
         "/improve_description - улучшить текст объявления\n"
         "/seller_tips - получить советы по стратегии цены\n"
-        "/similar_ads - похожие объявления по описанию"
+        "/similar_ads - похожие объявления по описанию\n\n"
+        "Можно пользоваться кнопками ниже.",
+        reply_markup=_main_keyboard(),
     )
 
 
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer("Текущий сценарий отменен. Для новой оценки отправь /estimate.")
+    await message.answer(
+        "Текущий сценарий отменен. Для новой оценки нажми кнопку 'Оценить квартиру'.",
+        reply_markup=_main_keyboard(),
+    )
 
 
 @router.message(Command("estimate"))
@@ -334,6 +352,36 @@ async def cmd_similar_ads(message: Message, state: FSMContext) -> None:
         return
 
     await message.answer(_format_similar_ads_message(similar_ads, predicted_price))
+
+
+@router.message(lambda m: (m.text or "").strip() == BTN_ESTIMATE)
+async def btn_estimate(message: Message, state: FSMContext) -> None:
+    await cmd_estimate(message, state)
+
+
+@router.message(lambda m: (m.text or "").strip() == BTN_CHECK_PRICE)
+async def btn_check_price(message: Message, state: FSMContext) -> None:
+    await cmd_check_price(message, state)
+
+
+@router.message(lambda m: (m.text or "").strip() == BTN_IMPROVE_DESCRIPTION)
+async def btn_improve_description(message: Message, state: FSMContext) -> None:
+    await cmd_improve_description(message, state)
+
+
+@router.message(lambda m: (m.text or "").strip() == BTN_SELLER_TIPS)
+async def btn_seller_tips(message: Message, state: FSMContext) -> None:
+    await cmd_seller_tips(message, state)
+
+
+@router.message(lambda m: (m.text or "").strip() == BTN_SIMILAR_ADS)
+async def btn_similar_ads(message: Message, state: FSMContext) -> None:
+    await cmd_similar_ads(message, state)
+
+
+@router.message(lambda m: (m.text or "").strip() == BTN_CANCEL)
+async def btn_cancel(message: Message, state: FSMContext) -> None:
+    await cmd_cancel(message, state)
 
 
 @router.message(EstimateFlow.collecting)
